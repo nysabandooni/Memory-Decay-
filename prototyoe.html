@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Memory Decay</title>
+<link rel="stylesheet" href="prototype.css">
+
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Memory Decay<span class="decay">— recall, scored honestly</span></h1>
+    <p>A working prototype of the core algorithm: fixed-schedule recall tests, three-part similarity scoring, decay rate, adaptive review intervals, and state classification. All computation happens in your browser, live.</p>
+  </header>
+
+  <div class="grid">
+    <div>
+      <div class="card">
+        <h2>New Concept</h2>
+        <label>Title</label>
+        <input type="text" id="c-title" placeholder="e.g. Binary Search">
+        <label>Concept material (raw)</label>
+        <textarea id="c-raw" placeholder="Paste or write what you want to remember..."></textarea>
+        <label>Core concepts (comma-separated; use | for aliases, e.g. divide and conquer|halving)</label>
+        <input type="text" id="c-keywords" placeholder="sorted array, midpoint|middle index, O(log n)">
+        <button id="add-btn">Add Concept</button>
+      </div>
+
+      <div class="card" style="margin-top:16px;">
+        <h2>Concepts</h2>
+        <div class="concept-list" id="concept-list"></div>
+      </div>
+    </div>
+
+    <div class="card" id="detail-panel">
+      <div class="empty">Add a concept, or select one from the list, to run recall tests.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const SCHEDULE = [
+  {n:1,label:"Test 1 · 3 min",days:3/1440},
+  {n:2,label:"Test 2 · 1 hr",days:1/24},
+  {n:3,label:"Test 3 · 4 hr",days:4/24},
+  {n:4,label:"Test 4 · 1 day",days:1},
+];
+const STOPWORDS = new Set("a an and the is are was were be been being of in on at to for with by only just this that these those it its as or if than then so not no do does did have has had".split(" "));
+
+let concepts = [];
+let activeId = null;
+
+function tokenize(text){
+  return (text.toLowerCase().match(/[a-z0-9]+/g) || []);
+}
+function filterStop(tokens){
+  return tokens.filter(t => !STOPWORDS.has(t));
+}
+function parseKeywords(raw){
+  return raw.split(",").map(s=>s.trim()).filter(Boolean).map(group=>{
+    return group.split("|").map(a=>a.trim().toLowerCase()).filter(Boolean);
+  });
+}
+
+function keywordScore(coreConcepts, answerRaw){
+  if(coreConcepts.length===0) return 1; // nothing to test against
+  const answerLower = answerRaw.toLowerCase();
+  let matched = 0;
+  coreConcepts.forEach(aliases=>{
+    if(aliases.some(a => answerLower.includes(a))) matched++;
+  });
+  return matched / coreConcepts.length;
+}
+
+function overlapScore(filteredMaterial, filteredAnswer){
+  const setM = new Set(filteredMaterial);
+  const setA = new Set(filteredAnswer);
+  const union = new Set([...setM, ...setA]);
+  if(union.size===0) return 0;
+  let common = 0;
+  setA.forEach(w=>{ if(setM.has(w)) common++; });
+  return common / union.size;
+}
+
+function cosineScore(filteredMaterial, filteredAnswer){
+  const freqM = {}, freqA = {};
+  filteredMaterial.forEach(w=>freqM[w]=(freqM[w]||0)+1);
+  filteredAnswer.forEach(w=>freqA[w]=(freqA[w]||0)+1);
+  const vocab = new Set([...Object.keys(freqM), ...Object.keys(freqA)]);
+  let dot=0, magM=0, magA=0;
+  vocab.forEach(w=>{
+    const m = freqM[w]||0, a = freqA[w]||0;
+    dot += m*a; magM += m*m; magA += a*a;
+  });
+  if(magM===0 || magA===0) return 0;
+  return dot / (Math.sqrt(magM)*Math.sqrt(magA));
+}
+
+function scoreAnswer(concept, answerRaw){
+  const filteredMaterial = filterStop(tokenize(concept.raw));
+  const filteredAnswer = filterStop(tokenize(answerRaw));
+  const k = keywordScore(concept.keywords, answerRaw);
+  const o = overlapScore(filteredMaterial, filteredAnswer);
+  const c = cosineScore(filteredMaterial, filteredAnswer);
+  const final = 0.4*k + 0.3*o + 0.3*c;
+  return {keyword:k, overlap:o, cosine:c, final:final};
+}
+
+function clamp(v,lo,hi){ return Math.max(lo, Math.min(hi, v)); }
+
+function recompute(concept){
+  const tests = concept.tests;
+  if(tests.length===0){ concept.decayRate=null; concept.state="new"; return; }
+
+  // baseline handling: baseline resets on "Revised" hikes
+  let baselineIdx = 0;
+  for(let i=1;i<tests.length;i++){
+    if(tests[i].score - tests[i-1].score > 0.2){
+      tests[i].flag = "Revised";
+      baselineIdx = i;
+    } else {
+      tests[i].flag = null;
+    }
+  }
+  concept.baselineIdx = baselineIdx;
+
+  const baseline = tests[baselineIdx];
+  const latest = tests[tests.length-1];
+
+  if(tests.length - baselineIdx >= 2){
+    let dr = (baseline.score - latest.score) / baseline.score;
+    if(latest.score > baseline.score) dr = 0;
+    concept.decayRate = clamp(dr, 0, 1);
+  } else {
+    concept.decayRate = 0;
+  }
+
+  const s4 = latest.score;
+  const dr = concept.decayRate;
+  if(dr > 0.6 || s4 < 0.4) concept.state = "risk";
+  else if(dr >= 0.3 || (s4 >= 0.4 && s4 < 0.7)) concept.state = "reinforce";
+  else if(dr < 0.3 && s4 >= 0.7) concept.state = "stable";
+  else concept.state = "reinforce";
+
+  // adaptive next interval, only meaningful once at least 4 tests have run since baseline
+  if(tests.length >= 4){
+    const prev = tests[tests.length-2];
+    const trend = clamp(latest.score - prev.score, -1, 1);
+    const retentionFactor = 0.5*(1-dr) + 0.3*latest.score + 0.2*trend;
+    const baseInterval = concept.lastInterval || 1; // days
+    let nextInterval = baseInterval * retentionFactor;
+    nextInterval = Math.max(nextInterval, 0.02); // floor so it never hits zero
+    concept.nextInterval = nextInterval;
+    concept.lastInterval = nextInterval;
+  } else {
+    concept.nextInterval = null;
+  }
+}
+
+function fmtInterval(days){
+  if(days==null) return "—";
+  if(days < 1/24) return Math.round(days*1440)+" min";
+  if(days < 1) return (days*24).toFixed(1)+" hr";
+  return days.toFixed(1)+" day"+(days>=2?"s":"");
+}
+function fmtPct(v){ return v==null ? "—" : Math.round(v*100)+"%"; }
+
+function stateBadge(state){
+  const map = {stable:["Stable","stable"], reinforce:["Needs Reinforcement","reinforce"], risk:["At Risk","risk"], new:["New","new"]};
+  const [label,cls] = map[state] || map.new;
+  return `<span class="badge ${cls}">${label}</span>`;
+}
+
+function addConcept(){
+  const title = document.getElementById('c-title').value.trim();
+  const raw = document.getElementById('c-raw').value.trim();
+  const kwRaw = document.getElementById('c-keywords').value.trim();
+  if(!title || !raw){ alert("Give the concept a title and some material."); return; }
+  const concept = {
+    id: 'c'+Date.now(),
+    title, raw,
+    keywords: parseKeywords(kwRaw),
+    tests: [],
+    elapsedDays: 0,
+    lastInterval: 1,
+    state: "new",
+    decayRate: null,
+    baselineIdx: 0,
+  };
+  concepts.push(concept);
+  activeId = concept.id;
+  document.getElementById('c-title').value='';
+  document.getElementById('c-raw').value='';
+  document.getElementById('c-keywords').value='';
+  render();
+}
+
+function submitAnswer(conceptId){
+  const concept = concepts.find(c=>c.id===conceptId);
+  const box = document.getElementById('answer-input');
+  const answer = box.value.trim();
+  if(!answer){ alert("Type a recall answer first."); return; }
+  const breakdown = scoreAnswer(concept, answer);
+  const testIdx = concept.tests.length;
+  const scheduleStep = SCHEDULE[Math.min(testIdx,3)];
+  let elapsed;
+  if(testIdx < 4){
+    elapsed = scheduleStep.days;
+  } else {
+    elapsed = concept.elapsedDays + (concept.nextInterval || 1);
+  }
+  concept.elapsedDays = elapsed;
+  concept.tests.push({
+    n: testIdx+1,
+    label: testIdx < 4 ? scheduleStep.label : `Test ${testIdx+1} · adaptive`,
+    elapsedDays: elapsed,
+    score: breakdown.final,
+    breakdown,
+    flag: null,
+  });
+  recompute(concept);
+  render();
+}
+
+function currentEstimate(concept){
+  if(concept.tests.length===0) return null;
+  const last = concept.tests[concept.tests.length-1];
+  const dr = concept.decayRate || 0;
+  // days since last test = 0 at this instant; show projection curve instead
+  return last.score;
+}
+
+function drawChart(concept){
+  const W=600,H=200,padL=36,padR=16,padT=16,padB=28;
+  const tests = concept.tests;
+  if(tests.length===0){
+    return `<svg viewBox="0 0 ${W} ${H}"><text x="${W/2}" y="${H/2}" fill="#a8a9a4" font-size="12" text-anchor="middle">No tests yet</text></svg>`;
+  }
+  const maxDay = Math.max(tests[tests.length-1].elapsedDays * 1.3, 1.2);
+  const minDay = Math.max(tests[0].elapsedDays*0.5, 0.001);
+  const logMin = Math.log10(minDay), logMax = Math.log10(maxDay);
+  const xPos = d => padL + (Math.log10(Math.max(d,minDay))-logMin)/(logMax-logMin) * (W-padL-padR);
+  const yPos = s => padT + (1-s) * (H-padT-padB);
+
+  let gridLines = "";
+  [0,0.25,0.5,0.75,1].forEach(v=>{
+    const y = yPos(v);
+    gridLines += `<line x1="${padL}" y1="${y}" x2="${W-padR}" y2="${y}" stroke="#343945" stroke-width="1"/>`;
+    gridLines += `<text x="${padL-8}" y="${y+3}" fill="#a8a9a4" font-size="9" text-anchor="end">${Math.round(v*100)}</text>`;
+  });
+
+  const colorFor = (t,i) => {
+    if(t.flag==="Revised") return "#8aa4d1";
+    if(t.score < 0.4) return "#d1654a";
+    if(t.score < 0.7) return "#e0b04a";
+    return "#7fae87";
+  };
+
+  let path = "";
+  tests.forEach((t,i)=>{
+    const x = xPos(t.elapsedDays), y = yPos(t.score);
+    path += (i===0?"M":"L") + x + "," + y + " ";
+  });
+
+  let points = tests.map((t,i)=>{
+    const x = xPos(t.elapsedDays), y = yPos(t.score);
+    const shape = t.flag==="Revised"
+      ? `<rect x="${x-4}" y="${y-4}" width="8" height="8" fill="${colorFor(t,i)}" transform="rotate(45 ${x} ${y})"/>`
+      : `<circle cx="${x}" cy="${y}" r="4" fill="${colorFor(t,i)}"/>`;
+    return shape + `<text x="${x}" y="${H-padB+16}" fill="#a8a9a4" font-size="8" text-anchor="middle">T${t.n}</text>`;
+  }).join("");
+
+  // dashed projection to next review
+  let projection = "";
+  if(concept.nextInterval){
+    const last = tests[tests.length-1];
+    const nextDay = last.elapsedDays + concept.nextInterval;
+    const dr = concept.decayRate || 0;
+    const projScore = Math.max(0, last.score - dr*last.score*concept.nextInterval);
+    const x1=xPos(last.elapsedDays), y1=yPos(last.score);
+    const x2=xPos(Math.min(nextDay,maxDay)), y2=yPos(projScore);
+    projection = `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#e0954a" stroke-width="1.5" stroke-dasharray="4 3"/>
+                  <circle cx="${x2}" cy="${y2}" r="3" fill="none" stroke="#e0954a" stroke-width="1.5"/>`;
+  }
+
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%">
+    ${gridLines}
+    <path d="${path}" fill="none" stroke="#eee9df" stroke-width="1.5"/>
+    ${projection}
+    ${points}
+  </svg>`;
+}
+
+function render(){
+  const list = document.getElementById('concept-list');
+  if(concepts.length===0){
+    list.innerHTML = `<div class="empty" style="padding:12px 0;">No concepts yet.</div>`;
+  } else {
+    list.innerHTML = concepts.map(c=>`
+      <div class="concept-item ${c.id===activeId?'active':''}" onclick="selectConcept('${c.id}')">
+        <span>${c.title}</span>
+        ${stateBadge(c.state)}
+      </div>
+    `).join("");
+  }
+
+  const panel = document.getElementById('detail-panel');
+  const concept = concepts.find(c=>c.id===activeId);
+  if(!concept){
+    panel.innerHTML = `<div class="empty">Add a concept, or select one from the list, to run recall tests.</div>`;
+    return;
+  }
+
+  const nextTestNum = concept.tests.length+1;
+  const inFixedSchedule = nextTestNum <= 4;
+  const dueLabel = inFixedSchedule ? SCHEDULE[nextTestNum-1].label : `Test ${nextTestNum} · adaptive (due in ${fmtInterval(concept.nextInterval)})`;
+
+  const testRows = concept.tests.map(t=>`
+    <div class="test-row">
+      <span class="tlabel">${t.label}</span>
+      <span class="score-breakdown">K ${fmtPct(t.breakdown.keyword)} · O ${fmtPct(t.breakdown.overlap)} · C ${fmtPct(t.breakdown.cosine)}</span>
+      <span>${fmtPct(t.score)}</span>
+      ${t.flag ? `<span class="revised-tag">${t.flag}</span>` : `<span style="width:56px;"></span>`}
+    </div>
+  `).join("") || `<div class="empty" style="padding:12px 0;">No recall tests taken yet.</div>`;
+
+  panel.innerHTML = `
+    <div class="detail-head">
+      <h2>${concept.title}</h2>
+      ${stateBadge(concept.state)}
+    </div>
+
+    <div class="meta-row">
+      <div class="stat"><div class="k">Decay Rate</div><div class="v">${concept.decayRate==null?'—':fmtPct(concept.decayRate)}</div></div>
+      <div class="stat"><div class="k">Latest Score</div><div class="v">${concept.tests.length?fmtPct(concept.tests[concept.tests.length-1].score):'—'}</div></div>
+      <div class="stat"><div class="k">Next Interval</div><div class="v">${fmtInterval(concept.nextInterval)}</div></div>
+      <div class="stat"><div class="k">Tests Taken</div><div class="v">${concept.tests.length}</div></div>
+    </div>
+
+    <h2 style="margin-top:22px;">Forgetting Curve</h2>
+    ${drawChart(concept)}
+    <div class="legend">
+      <span><span class="dot" style="background:#7fae87"></span>Stable</span>
+      <span><span class="dot" style="background:#e0b04a"></span>Needs reinforcement</span>
+      <span><span class="dot" style="background:#d1654a"></span>At risk</span>
+      <span><span class="dot" style="background:#8aa4d1"></span>Revised (hike)</span>
+      <span>┄ projected estimate</span>
+    </div>
+
+    <h2 style="margin-top:22px;">Test History</h2>
+    ${testRows}
+
+    <div class="answer-box">
+      <div class="due">Due: ${dueLabel}</div>
+      <label>Free recall answer</label>
+      <textarea id="answer-input" placeholder="Recall what you remember about this concept, in your own words..."></textarea>
+      <button onclick="submitAnswer('${concept.id}')">Submit Recall Test</button>
+    </div>
+  `;
+}
+
+function selectConcept(id){ activeId = id; render(); }
+
+document.getElementById('add-btn').addEventListener('click', addConcept);
+
+render();
+</script>
+</body>
+</html>
