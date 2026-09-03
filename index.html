@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Memory Decay</title>
+    <link rel="stylesheet" href="app.css">
+</head>
+
+<body>
+    <div class="wrap">
+        <header class="site-header">
+            <button class="brand" data-view="dashboard">Memory Decay <span>— recall, scored honestly</span></button>
+            <nav aria-label="Main navigation">
+                <button class="nav-button active" data-view="dashboard">Overview</button>
+                <button class="nav-button" data-view="concepts">Concepts</button>
+            </nav>
+        </header>
+        <main id="view" aria-live="polite">
+            <div class="page-heading">
+                <div>
+                    <div class="eyebrow">Memory overview</div>
+                    <h1>Average retention</h1>
+                    <p>A living picture of what is staying with you.</p>
+                </div>
+                <button type="button">+ Add concept</button>
+            </div>
+
+            <div class="grid overview-grid">
+                <section class="card retention-card">
+                    <div class="card-head">
+                        <h2>Last 60 days</h2>
+                        <span class="retention-value">0<small>% retained</small></span>
+                    </div>
+                    <svg viewBox="0 0 980 250" role="img" aria-label="Average retention trend">
+                        <g stroke="#343945">
+                            <line x1="20" y1="210" x2="960" y2="210" />
+                            <line x1="20" y1="125" x2="960" y2="125" />
+                            <line x1="20" y1="40" x2="960" y2="40" />
+                        </g>
+                        <polyline points="30,210 180,210 330,210 480,210 630,210 780,210 930,210" fill="none"
+                            stroke="#e0954a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+                        <g fill="#eee9df" stroke="#e0954a" stroke-width="2">
+                            <circle cx="30" cy="210" r="5" />
+                            <circle cx="180" cy="210" r="5" />
+                            <circle cx="330" cy="210" r="5" />
+                            <circle cx="480" cy="210" r="5" />
+                            <circle cx="630" cy="210" r="5" />
+                            <circle cx="780" cy="210" r="5" />
+                            <circle cx="930" cy="210" r="5" />
+                        </g>
+                        <g fill="#a8a9a4" font-size="11" text-anchor="middle">
+                            <text x="30" y="238">6d ago</text>
+                            <text x="180" y="238">5d</text>
+                            <text x="330" y="238">4d</text>
+                            <text x="480" y="238">3d</text>
+                            <text x="630" y="238">2d</text>
+                            <text x="780" y="238">Yesterday</text>
+                            <text x="930" y="238">Today</text>
+                        </g>
+                    </svg>
+                </section>
+
+                <section class="card">
+                    <div class="card-head">
+                        <h2>Status</h2>
+                        <span class="muted">0 concepts</span>
+                    </div>
+                    <div class="metric">
+                        <div><strong>Stable</strong>
+                            <div class="bar"><i style="width:0%"></i></div>
+                        </div><span>0</span>
+                    </div>
+                    <div class="metric">
+                        <div><strong>Needs reinforcement</strong>
+                            <div class="bar"><i style="width:0%;background:var(--reinforce)"></i></div>
+                        </div><span>0</span>
+                    </div>
+                    <div class="metric">
+                        <div><strong>At risk</strong>
+                            <div class="bar"><i style="width:0%;background:var(--risk)"></i></div>
+                        </div><span>0</span>
+                    </div>
+                </section>
+
+                <section class="card">
+                    <div class="card-head">
+                        <h2>Upcoming review</h2>
+                        <button type="button" class="ghost">All concepts</button>
+                    </div>
+                    <div class="empty">Nothing needs reinforcement yet.</div>
+                </section>
+            </div>
+
+        </main>
+    </div>
+    <dialog id="concept-dialog">
+        <form id="concept-form" method="dialog">
+            <button class="dialog-close" type="button" data-close-dialog aria-label="Close">×</button>
+            <h2>New Concept</h2>
+            <label>Title<input required name="title" placeholder="e.g. Binary Search"></label>
+            <label>Concept material<textarea required name="raw"
+                    placeholder="Paste or write what you want to remember..."></textarea></label>
+            <label>Core concepts<input name="keywords" placeholder="sorted array, midpoint|middle index"></label>
+            <div class="dialog-actions"><button type="button" class="ghost" data-close-dialog>Cancel</button><button>Add
+                    Concept</button></div>
+        </form>
+    </dialog>
+    <script src="logic.js"></script>
+    <script src="app.js"></script>
+</body>
+
+</html>
